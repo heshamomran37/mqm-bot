@@ -1,0 +1,20 @@
+{
+    "business_name": "MQM_IT",
+    "services": [
+          {
+                  "id": "1",
+                  "name": "Web Development",
+                  "description": "Custom web solutions for your business."
+          },
+          {
+                  "id": "2",
+                  "name": "Graphic Design",
+                  "description": "Creative designs that make an impact."
+          },
+          {
+                  "id": "3",
+                  "name": "Social Media Marketing",
+                  "description": "Engage your audience online."
+          }
+    ]
+}
