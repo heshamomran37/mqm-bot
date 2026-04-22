@@ -1,0 +1,6 @@
+node_modules
+  npm-debug.log
+  mqm_leads.xlsx
+  qr_code.png
+  .git
+  .github
