@@ -5,136 +5,197 @@ const QRCode = require('qrcode');
 const ExcelJS = require('exceljs');
 const fs = require('fs');
 const path = require('path');
+const { GoogleGenAI } = require('@google/genai');
 
+// Initialize Gemini AI
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
+// Load services data
 const data = JSON.parse(fs.readFileSync('./services.json', 'utf8'));
 
+// Initialize Excel Leads File
 const LEADS_FILE = './mqm_leads.xlsx';
 async function initExcel() {
-      if (!fs.existsSync(LEADS_FILE)) {
-                const workbook = new ExcelJS.Workbook();
-                const sheet = workbook.addWorksheet('Leads');
-                sheet.columns = [
-                  { header: 'Date', key: 'date', width: 20 },
-                  { header: 'User', key: 'user', width: 30 },
-                  { header: 'Phone', key: 'phone_provided', width: 20 },
-                  { header: 'Service', key: 'service', width: 30 },
-                  { header: 'Message', key: 'full_msg', width: 50 }
-                          ];
-                await workbook.xlsx.writeFile(LEADS_FILE);
-      }
+          if (!fs.existsSync(LEADS_FILE)) {
+                        const workbook = new ExcelJS.Workbook();
+                        const sheet = workbook.addWorksheet('Leads');
+                        sheet.columns = [
+                              { header: 'Date', key: 'date', width: 20 },
+                              { header: 'User/Key', key: 'user', width: 30 },
+                              { header: 'Phone Provided', key: 'phone_provided', width: 20 },
+                              { header: 'Service Interested In', key: 'service', width: 30 },
+                              { header: 'Full Message', key: 'full_msg', width: 50 }
+                                      ];
+                        await workbook.xlsx.writeFile(LEADS_FILE);
+          }
 }
 initExcel();
 
 async function addLead(userData) {
-      const workbook = new ExcelJS.Workbook();
-      await workbook.xlsx.readFile(LEADS_FILE);
-      const sheet = workbook.getWorksheet('Leads');
-      sheet.addRow({
-                date: new Date().toLocaleString(),
-                user: userData.from,
-                phone_provided: userData.phone || 'N/A',
-                service: userData.service || 'N/A',
-                full_msg: userData.body
-      });
-      await workbook.xlsx.writeFile(LEADS_FILE);
+          const workbook = new ExcelJS.Workbook();
+          await workbook.xlsx.readFile(LEADS_FILE);
+          const sheet = workbook.getWorksheet('Leads');
+          sheet.addRow({
+                        date: new Date().toLocaleString('ar-EG'),
+                        user: userData.from,
+                        phone_provided: userData.phone || 'N/A',
+                        service: userData.service || 'N/A',
+                        full_msg: userData.body
+          });
+          await workbook.xlsx.writeFile(LEADS_FILE);
 }
 
+// User States to track conversation flow
 const userStates = {};
 
+// Helper for emojis
 function getEmoji(id) {
-      return id;
+          const emojis = {
+                        '1': '1: '1', '2': '2', '3': '3', '4': '4', '5': '5', '6': '6', '7': '7', '8': '8', '9': '9', '0': '0'
+};
+    return emojis[id] || '*';
 }
 
-const client = new Client({
-      authStrategy: new LocalAuth(),
-      puppeteer: {
-                executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-                handleSIGINT: false,
-                args: [
-                              '--no-sandbox',
-                              '--disable-setuid-sandbox',
-                              '--disable-dev-shm-usage',
-                              '--disable-accelerated-2d-canvas',
-                              '--no-first-run',
-                              '--no-zygote',
-                              '--disable-gpu'
-                          ]
-      }
-});
+// Gemini Response Function
+async function getGeminiResponse(userMsg) {
+          try {
+                        const systemPrompt = \`
+                        You are an intelligent assistant for MQM_IT Digital Solutions.
+                        Your task is to respond to customer inquiries professionally and friendly.
+                        Here is the list of services we provide:
+                        \${data.services.map(s => \`- \${s.name}: \${s.description}\`).join('\\n')}
 
-client.on('qr', async (qr) => {
-      console.log('QR Code generated');
-      qrcodeTerminal.generate(qr, { small: true });
-      try {
-                await QRCode.toFile('./qr_code.png', qr);
-      } catch (err) { console.error(err); }
-});
+                        - Company Name: \${data.business_name}
+                        - Website: \${data.contact.website}
 
-client.on('ready', () => {
-      console.log('Bot ready');
-});
+                        Response Instructions:
+                        1. If the customer asks about an existing service, explain it clearly and encourage them to order it.
+                        2. If they ask about a non-existent service, politely inform them that we specialize in the digital solutions mentioned above and suggest they talk to a representative by pressing 0.
+                        3. Always encourage customers to see the portfolio (by pressing 9).
+                        4. Always respond in Arabic in a professional and attractive tone.
+                        5. Keep responses concise and suitable for WhatsApp conversations.
+                        6. Do not invent services that are not in the list.
+                        \`;
 
-client.on('message', async msg => {
-      let chat;
-      try {
-                chat = await msg.getChat();
-      } catch (e) {}
+                                const response = await ai.models.generateContent({
+                                            model: 'models/gemini-flash-latest',
+                                                        systemInstruction: systemPrompt,
+                                                                    contents: [{ role: 'user', parts: [{ text: userMsg }] }]
+                                                                            });
 
-              const userMessage = msg.body.toLowerCase().trim();
-      const userId = msg.from;
-
-              if (userStates[userId] && userStates[userId].state === 'AWAITING_PHONE') {
-                        await addLead({
-                                      from: userId,
-                                      phone: msg.body,
-                                      service: userStates[userId].service,
-                                      body: msg.body
-                        });
-                        delete userStates[userId];
-                        await client.sendMessage(msg.from, 'Success! Team will contact you.');
-                        return;
-              }
-
-              const greetings = ['hello', 'hi', 'hey', 'start', '.', '?'];
-      if (greetings.some(g => userMessage.includes(g))) {
-                const welcomeMsg = 'Welcome to MQM_IT\n' +
-                              'Please choose service:\n' +
-                              data.services.map(s => s.id + ' ' + s.name).join('\n') +
-                              '\n9 Portfolio\n0 Talk to us';
-                await client.sendMessage(msg.from, welcomeMsg);
-                return;
-      }
-
-              if (userMessage === '9') {
-                        const portfolioPath = path.join(__dirname, 'portfolio', 'mqm_portfolio.png');
-                        if (fs.existsSync(portfolioPath)) {
-                                      const media = MessageMedia.fromFilePath(portfolioPath);
-                                      await client.sendMessage(msg.from, media, { caption: 'Our Portfolio' });
-                        } else {
-                                      await client.sendMessage(msg.from, 'Portfolio not available.');
-                        }
-                        return;
-              }
-
-              const selectedService = data.services.find(s => s.id === userMessage);
-      if (selectedService) {
-                await client.sendMessage(msg.from, selectedService.name + '\n' + selectedService.description + '\nOrder? Reply "order"');
-                userStates[userId] = { service: selectedService.name };
-                return;
-      }
-
-              if (userMessage === 'order') {
-                        userStates[userId] = { ...userStates[userId], state: 'AWAITING_PHONE' };
-                        await client.sendMessage(msg.from, 'Send your phone number.');
-                        return;
-              }
-
-              if (userMessage === '0') {
-                        await client.sendMessage(msg.from, 'Connecting...');
-                        return;
-              }
-
-              await client.sendMessage(msg.from, 'Choose a number from list.');
-});
-
-client.initialize();
+                                                                                    return response.text;
+                                                                                        } catch (error) {
+                                                                                                console.error('Gemini Error:', error);
+                                                                                                        return null;
+                                                                                                            }
+                                                                                                            }
+                                                                                                            
+                                                                                                            // Initialize WhatsApp client
+                                                                                                            const client = new Client({
+                                                                                                                authStrategy: new LocalAuth(),
+                                                                                                                    puppeteer: {
+                                                                                                                            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+                                                                                                                                    handleSIGINT: false,
+                                                                                                                                            args: [
+                                                                                                                                                        '--no-sandbox',
+                                                                                                                                                                    '--disable-setuid-sandbox',
+                                                                                                                                                                                '--disable-dev-shm-usage',
+                                                                                                                                                                                            '--disable-accelerated-2d-canvas',
+                                                                                                                                                                                                        '--no-first-run',
+                                                                                                                                                                                                                    '--no-zygote',
+                                                                                                                                                                                                                                '--disable-gpu'
+                                                                                                                                                                                                                                        ]
+                                                                                                                                                                                                                                            }
+                                                                                                                                                                                                                                            });
+                                                                                                                                                                                                                                            
+                                                                                                                                                                                                                                            client.on('qr', async (qr) => {
+                                                                                                                                                                                                                                                console.log('--- QR CODE ---');
+                                                                                                                                                                                                                                                    qrcodeTerminal.generate(qr, { small: true });
+                                                                                                                                                                                                                                                        try {
+                                                                                                                                                                                                                                                                await QRCode.toFile('./qr_code.png', qr);
+                                                                                                                                                                                                                                                                        console.log('QR Code saved as image.');
+                                                                                                                                                                                                                                                                            } catch (err) { console.error(err); }
+                                                                                                                                                                                                                                                                            });
+                                                                                                                                                                                                                                                                            
+                                                                                                                                                                                                                                                                            client.on('ready', () => {
+                                                                                                                                                                                                                                                                                console.log('Bot is ready! MQM_IT');
+                                                                                                                                                                                                                                                                                });
+                                                                                                                                                                                                                                                                                
+                                                                                                                                                                                                                                                                                client.on('message', async msg => {
+                                                                                                                                                                                                                                                                                    let chat;
+                                                                                                                                                                                                                                                                                        try {
+                                                                                                                                                                                                                                                                                                chat = await msg.getChat();
+                                                                                                                                                                                                                                                                                                    } catch (e) {
+                                                                                                                                                                                                                                                                                                            console.log('Warn: Could not get chat object, continuing...');
+                                                                                                                                                                                                                                                                                                                }
+                                                                                                                                                                                                                                                                                                                    const userMessage = msg.body.toLowerCase().trim();
+                                                                                                                                                                                                                                                                                                                        const userId = msg.from;
+                                                                                                                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                                                                                                            console.log(\`[Message] from \${userId}: \${msg.body}\`);
+                                                                                                                                                                                                                                                                                                                            
+                                                                                                                                                                                                                                                                                                                                if (userStates[userId] && userStates[userId].state === 'AWAITING_PHONE') {
+                                                                                                                                                                                                                                                                                                                                        await addLead({
+                                                                                                                                                                                                                                                                                                                                                    from: userId,
+                                                                                                                                                                                                                                                                                                                                                                phone: msg.body,
+                                                                                                                                                                                                                                                                                                                                                                            service: userStates[userId].service,
+                                                                                                                                                                                                                                                                                                                                                                                        body: msg.body
+                                                                                                                                                                                                                                                                                                                                                                                                });
+                                                                                                                                                                                                                                                                                                                                                                                                        delete userStates[userId];
+                                                                                                                                                                                                                                                                                                                                                                                                                await client.sendMessage(msg.from, 'Data received! We will contact you soon. Thanks!');
+                                                                                                                                                                                                                                                                                                                                                                                                                        return;
+                                                                                                                                                                                                                                                                                                                                                                                                                            }
+                                                                                                                                                                                                                                                                                                                                                                                                                            
+                                                                                                                                                                                                                                                                                                                                                                                                                                const greetings = ['hello', 'hi', 'hey', 'start', '.', '?'];
+                                                                                                                                                                                                                                                                                                                                                                                                                                    const isGreeting = greetings.some(g => userMessage.includes(g));
+                                                                                                                                                                                                                                                                                                                                                                                                                                    
+                                                                                                                                                                                                                                                                                                                                                                                                                                        if (isGreeting) {
+                                                                                                                                                                                                                                                                                                                                                                                                                                                const welcomeMsg = \`Welcome to \${data.business_name} Digital Solutions!\\n\\nPlease choose a service:\\n\` +
+                                                                                                                                                                                                                                                                                                                                                                                                                                                            data.services.map(s => \`[\${s.id}] \${s.name}\`).join('\\n') +
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                        \`\\n\\n[9] Portfolio\\n[0] Support\`;
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        await client.sendMessage(msg.from, welcomeMsg);
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                return;
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    }
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        if (userMessage === '9' || userMessage.includes('portfolio')) {
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                const portfolioPath = path.join(__dirname, 'portfolio', 'mqm_portfolio.png');
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        if (fs.existsSync(portfolioPath)) {
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    const media = MessageMedia.fromFilePath(portfolioPath);
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                await client.sendMessage(msg.from, media, { caption: 'Our Portfolio' });
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        } else {
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    await client.sendMessage(msg.from, 'Portfolio is being updated.');
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            }
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    return;
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        }
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            const selectedService = data.services.find(s => s.id === userMessage);
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                if (selectedService) {
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        const response = \`*\${selectedService.name}*\\n\\n\${selectedService.description}\\n\\nOrder now? (Reply with "order" or "10")\`;
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                await client.sendMessage(msg.from, response);
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        userStates[userId] = { service: selectedService.name };
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                return;
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    }
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        if (userMessage === 'order' || userMessage === '10') {
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                userStates[userId] = { ...userStates[userId], state: 'AWAITING_PHONE' };
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        await client.sendMessage(msg.from, 'Please send your phone number.');
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                return;
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    }
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        if (userMessage === '0') {
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                await client.sendMessage(msg.from, 'Connecting to support...');
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        return;
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            }
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                console.log('Unknown message, asking Gemini...');
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    const aiResponse = await getGeminiResponse(msg.body);
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            if (aiResponse) {
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    await client.sendMessage(msg.from, aiResponse);
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        } else {
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                await client.sendMessage(msg.from, 'Sorry, I did not understand.');
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    }
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    });
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    client.initialize();
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
